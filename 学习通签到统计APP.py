@@ -4,6 +4,7 @@ import pandas as pd
 import os
 from pathlib import Path
 import datetime
+import warnings
 
 class AttendanceApp:
     def __init__(self, root):
@@ -14,6 +15,9 @@ class AttendanceApp:
         # 全局变量
         self.file_paths = []
         self.summary_data = []
+
+        # 过滤openpyxl的样式警告
+        warnings.filterwarnings('ignore', category=UserWarning, module='openpyxl')
 
         # 创建UI组件
         self.create_widgets()
@@ -30,10 +34,10 @@ class AttendanceApp:
         ttk.Button(button_frame, text="导入单个文件", command=self.import_single_file).pack(side=tk.LEFT, padx=5)
         ttk.Button(button_frame, text="批量导入文件", command=self.import_multiple_files).pack(side=tk.LEFT, padx=5)
         ttk.Button(button_frame, text="导入文件夹", command=self.import_folder).pack(side=tk.LEFT, padx=5)
-        # 新增：重置按钮
+        # 重置按钮
         ttk.Button(button_frame, text="重置所有", command=self.reset_all).pack(side=tk.RIGHT, padx=5)
         ttk.Button(button_frame, text="处理选中文件", command=self.process_files).pack(side=tk.RIGHT, padx=5)
-        # 修复：padx参数移到pack方法中（ttk.Button初始化不支持padx）
+        # padx参数移到pack方法中（ttk.Button初始化不支持padx）
         ttk.Button(button_frame, text="生成汇总表", command=self.generate_summary_button).pack(side=tk.RIGHT, padx=10)
 
         # 文件列表显示
@@ -247,9 +251,25 @@ class AttendanceApp:
             if col not in df.columns:
                 raise KeyError(col)
 
-        # 生成统计列
-        df['签到统计'] = df['签到状态'].apply(
-            lambda x: 1 if str(x).strip() == '已签' else 0 if str(x).strip() == '未参与' else None
+        # 生成已签统计
+        df['已签统计'] = df['签到状态'].apply(
+            lambda x: 1 if str(x).strip() == '已签' else 0 if str(x).strip() in ['教师代签', '迟到', '未参与'] else None
+        )
+        # 生成教师代签统计
+        df['教师代签统计'] = df['签到状态'].apply(
+            lambda x: 1 if str(x).strip() == '教师代签' else 0 if str(x).strip() in ['已签', '迟到', '未参与'] else None
+        )
+        # 生成迟到统计
+        df['迟到统计'] = df['签到状态'].apply(
+            lambda x: 1 if str(x).strip() == '迟到' else 0 if str(x).strip() in ['已签', '教师代签', '未参与'] else None
+        )
+        # 生成未参与统计
+        df['未参与统计'] = df['签到状态'].apply(
+            lambda x: 1 if str(x).strip() == '未参与' else 0 if str(x).strip() in ['已签', '教师代签', '迟到'] else None
+        )
+        # 生成最终签到统计（已签/教师代签/迟到都算1，未参与算0）
+        df['最终签到统计'] = df['签到状态'].apply(
+            lambda x: 1 if str(x).strip() in ['已签', '教师代签', '迟到'] else 0 if str(x).strip() == '未参与' else None
         )
 
         # 保存处理后的文件
@@ -282,7 +302,11 @@ class AttendanceApp:
                 '专业': row['专业'],
                 '行政班级': row['行政班级'],
                 '文件名': file_name,
-                '签到统计': row['签到统计']
+                '已签统计': row['已签统计'],
+                '教师代签统计': row['教师代签统计'],
+                '迟到统计': row['迟到统计'],
+                '未参与统计': row['未参与统计'],
+                '最终签到统计': row['最终签到统计']
             })
 
     def generate_summary_button(self):
@@ -296,11 +320,25 @@ class AttendanceApp:
 
         try:
             summary_df = pd.DataFrame(self.summary_data)
-            # 按姓名和学号分组，保留学校、院系、专业、行政班级信息并统计总签到次数
+            # 按分组对所有统计列求和
             final_summary = summary_df.groupby(
                 ['姓名', '学号/工号', '学校', '院系', '专业', '行政班级']
-            )['签到统计'].sum().reset_index()
-            final_summary.rename(columns={'签到统计': '总签到次数'}, inplace=True)
+            ).agg({
+                '已签统计': 'sum',
+                '教师代签统计': 'sum',
+                '迟到统计': 'sum',
+                '未参与统计': 'sum',
+                '最终签到统计': 'sum'
+            }).reset_index()
+
+            # 重命名列名为"总XXX统计"
+            final_summary.rename(columns={
+                '已签统计': '总已签统计',
+                '教师代签统计': '总教师代签统计',
+                '迟到统计': '总迟到统计',
+                '未参与统计': '总未参与统计',
+                '最终签到统计': '总最终签到统计'
+            }, inplace=True)
 
             # 保存汇总表
             save_path = filedialog.asksaveasfilename(
@@ -312,8 +350,9 @@ class AttendanceApp:
             if save_path:
                 final_summary.to_excel(save_path, index=False)
                 self.log_message(f"汇总表生成成功：{os.path.basename(save_path)}")
-                self.log_message(f"汇总数据：共统计{len(final_summary)}名学生的签到情况")
-                messagebox.showinfo("成功", f"汇总表已保存！\n文件路径：{save_path}\n共统计{len(final_summary)}名学生")
+                self.log_message(f"汇总数据：共统计{len(final_summary)}名学生的签到情况，包含多维度签到统计")
+                messagebox.showinfo("成功",
+                                    f"汇总表已保存！\n文件路径：{save_path}\n共统计{len(final_summary)}名学生\n包含：总已签、总教师代签、总迟到、总未参与、总最终签到统计")
             else:
                 self.log_message("用户取消了汇总表保存操作", "WARNING")
 
